@@ -13,7 +13,7 @@ public class WebCrawler implements Crawler {
     private final int perHost;
     private final ExecutorService executorDownloads;
     private final ExecutorService executorExtractors;
-    private ConcurrentMap<String, TaskBufferForHost> taskBufferForHost;
+    private final ConcurrentMap<String, TaskBufferForHost> taskBufferForHost;
 
     public WebCrawler(final Downloader downloader, final int downloaders, final int extractors, final int perHost) {
         this.downloader = downloader;
@@ -58,7 +58,7 @@ public class WebCrawler implements Crawler {
     }
 
     private class TaskBufferForHost {
-        private int currentTasks;
+        private int currentTasks = 0;
         private final Queue<Runnable> tasks = new ArrayDeque<>();
 
         synchronized void runTask() {
@@ -69,7 +69,9 @@ public class WebCrawler implements Crawler {
                     try {
                         task.run();
                     } finally {
-                        currentTasks--;
+                        synchronized (TaskBufferForHost.this) {
+                            currentTasks--;
+                        }
                         runTask();
                     }
                 });
@@ -95,7 +97,7 @@ public class WebCrawler implements Crawler {
 
         Result run(final int depth) {
             for (int i = 0; i < depth; i++) {
-                Queue<String> queueTmp = queue;
+                final Queue<String> queueTmp = queue;
                 queue = queueCopy;
                 queueCopy = queueTmp;
 
@@ -135,14 +137,14 @@ public class WebCrawler implements Crawler {
             });
         }
 
-        private void extract(final Document document, final Phaser lock) {
-            lock.register();
+        private void extract(final Document document, final Phaser phaser) {
+            phaser.register();
             executorExtractors.submit(() -> {
                 try {
                     queue.addAll(document.extractLinks());
                 } catch (final IOException ignored) {
                 } finally {
-                    lock.arrive();
+                    phaser.arrive();
                 }
             });
         }
@@ -159,8 +161,8 @@ public class WebCrawler implements Crawler {
         executorDownloads.shutdown();
         executorExtractors.shutdown();
         try {
-            executorExtractors.awaitTermination(0, TimeUnit.MILLISECONDS);
-            executorDownloads.awaitTermination(0, TimeUnit.MILLISECONDS);
+            executorExtractors.awaitTermination(60, TimeUnit.SECONDS);
+            executorDownloads.awaitTermination(60, TimeUnit.SECONDS);
         } catch (final InterruptedException e) {
             System.err.println("Could not terminate executor pools: " + e.getMessage());
         }
